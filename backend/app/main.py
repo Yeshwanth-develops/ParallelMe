@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes_sandbox import router as sandbox_router
+
 app = FastAPI(
     title="ParallelMe API",
     description="Parallel Strategy Experimentation Engine",
@@ -15,6 +17,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(sandbox_router)
+
 
 @app.get("/")
 async def root():
@@ -27,4 +31,4 @@ async def root():
 
 @app.get("/api/health")
 async def health():
-    return {"status": "healthy"}
+    return {"status": "healthy"}
