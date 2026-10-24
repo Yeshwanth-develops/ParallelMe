@@ -1,7 +1,9 @@
 
 from __future__ import annotations
 
+import ast
 import io
+import re
 import tarfile
 import time
 from typing import Any
@@ -9,71 +11,73 @@ from typing import Any
 import docker
 from docker.errors import DockerException, ImageNotFound
 
-
 SANDBOX_IMAGE = "parallelme-sandbox:latest"
-DEFAULT_TIMEOUT_SECONDS = 5
 MAX_CODE_BYTES = 64 * 1024
+MAX_TEST_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 16 * 1024
 
 
-def _create_code_archive(code: str) -> bytes:
-    """Package candidate code for transfer into the isolated container."""
-    encoded = code.encode("utf-8")
+def _create_archive(files: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
 
-    if len(encoded) > MAX_CODE_BYTES:
-        raise ValueError(
-            f"Code exceeds the {MAX_CODE_BYTES}-byte size limit."
-        )
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for filename, content in files.items():
+            encoded = content.encode("utf-8")
+            info = tarfile.TarInfo(filename)
+            info.size = len(encoded)
+            info.mode = 0o444
+            info.uid = 10001
+            info.gid = 10001
+            archive.addfile(info, io.BytesIO(encoded))
 
-    archive_buffer = io.BytesIO()
-
-    with tarfile.open(fileobj=archive_buffer, mode="w") as archive:
-        info = tarfile.TarInfo(name="main.py")
-        info.size = len(encoded)
-        info.mode = 0o444
-        info.uid = 10001
-        info.gid = 10001
-        info.uname = "sandbox"
-        info.gname = "sandbox"
-        archive.addfile(info, io.BytesIO(encoded))
-
-    archive_buffer.seek(0)
-    return archive_buffer.read()
+    buffer.seek(0)
+    return buffer.read()
 
 
-def execute_python(
-    code: str,
-    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+def _validate_syntax(code: str) -> dict[str, Any] | None:
+    try:
+        ast.parse(code)
+        return None
+    except SyntaxError as exc:
+        return {
+            "status": "invalid_syntax",
+            "passed": False,
+            "syntax_error": {
+                "message": exc.msg,
+                "line": exc.lineno,
+                "offset": exc.offset,
+            },
+            "passed_tests": 0,
+            "failed_tests": 0,
+            "duration_ms": 0,
+        }
+
+
+def _run_container(
+    files: dict[str, str],
+    command: list[str],
+    timeout_seconds: int,
 ) -> dict[str, Any]:
-    """
-    Execute Python code in a disposable, resource-limited Docker container.
-
-    This is an initial execution primitive, not yet the complete pytest
-    evaluation engine.
-    """
-    if not 1 <= timeout_seconds <= 30:
-        raise ValueError("Timeout must be between 1 and 30 seconds.")
-
-    archive = _create_code_archive(code)
+    archive = _create_archive(files)
     client = docker.from_env()
     container = None
-    started_at = time.monotonic()
+    started = time.monotonic()
 
     try:
         try:
             client.images.get(SANDBOX_IMAGE)
         except ImageNotFound as exc:
             raise RuntimeError(
-                f"Sandbox image '{SANDBOX_IMAGE}' was not found. "
-                "Build it using the sandbox Dockerfile first."
+                f"Sandbox image '{SANDBOX_IMAGE}' is missing."
             ) from exc
 
         container = client.containers.create(
             image=SANDBOX_IMAGE,
-            command=["python", "-I", "/workspace/main.py"],
+            command=command,
             user="10001:10001",
             working_dir="/workspace",
             network_mode="none",
+            read_only=False,
             mem_limit="256m",
             cpu_period=100000,
             cpu_quota=50000,
@@ -81,7 +85,7 @@ def execute_python(
             cap_drop=["ALL"],
             security_opt=["no-new-privileges:true"],
             tmpfs={
-                "/tmp": "rw,nosuid,nodev,size=16m",
+                "/tmp": "rw,noexec,nosuid,nodev,size=16m",
             },
             environment={
                 "PYTHONDONTWRITEBYTECODE": "1",
@@ -93,47 +97,45 @@ def execute_python(
             ),
         )
 
-        uploaded = container.put_archive("/workspace", archive)
-        if not uploaded:
-            raise RuntimeError("Failed to transfer candidate code.")
+        if not container.put_archive("/workspace", archive):
+            raise RuntimeError("Could not copy files into sandbox.")
 
         container.start()
-        deadline = started_at + timeout_seconds
+        deadline = started + timeout_seconds
 
         while time.monotonic() < deadline:
             container.reload()
-
             if container.status == "exited":
                 break
-
             time.sleep(0.05)
         else:
             container.kill()
             return {
                 "status": "timeout",
                 "passed": False,
-                "stdout": "",
-                "stderr": "",
+                "passed_tests": 0,
+                "failed_tests": 0,
                 "duration_ms": round(
-                    (time.monotonic() - started_at) * 1000
+                    (time.monotonic() - started) * 1000
                 ),
             }
 
-        exit_info = container.wait(timeout=3)
-        logs = container.logs(stdout=True, stderr=False)
-        errors = container.logs(stdout=False, stderr=True)
-
-        stdout = logs.decode("utf-8", errors="replace")
-        stderr = errors.decode("utf-8", errors="replace")
+        result = container.wait(timeout=3)
+        stdout = container.logs(
+            stdout=True, stderr=False
+        ).decode("utf-8", errors="replace")
+        stderr = container.logs(
+            stdout=False, stderr=True
+        ).decode("utf-8", errors="replace")
 
         return {
             "status": "completed",
-            "passed": exit_info.get("StatusCode", 1) == 0,
-            "exit_code": exit_info.get("StatusCode", 1),
+            "passed": result.get("StatusCode", 1) == 0,
+            "exit_code": result.get("StatusCode", 1),
             "stdout": stdout[-MAX_OUTPUT_BYTES:],
             "stderr": stderr[-MAX_OUTPUT_BYTES:],
             "duration_ms": round(
-                (time.monotonic() - started_at) * 1000
+                (time.monotonic() - started) * 1000
             ),
         }
 
@@ -146,5 +148,104 @@ def execute_python(
                 container.remove(force=True)
             except DockerException:
                 pass
-
         client.close()
+
+
+def execute_python(
+    code: str,
+    timeout_seconds: int = 5,
+) -> dict[str, Any]:
+    if not 1 <= timeout_seconds <= 30:
+        raise ValueError("Timeout must be between 1 and 30 seconds.")
+
+    if len(code.encode("utf-8")) > MAX_CODE_BYTES:
+        raise ValueError("Candidate code is too large.")
+
+    syntax_error = _validate_syntax(code)
+    if syntax_error:
+        return syntax_error
+
+    result = _run_container(
+        {"main.py": code},
+        ["python", "-I", "/workspace/main.py"],
+        timeout_seconds,
+    )
+    result.setdefault("passed_tests", 0)
+    result.setdefault("failed_tests", 0)
+    return result
+
+
+def evaluate_python(
+    code: str,
+    tests: str,
+    timeout_seconds: int = 5,
+) -> dict[str, Any]:
+    """Evaluate candidate Python code using isolated pytest execution."""
+    if not 1 <= timeout_seconds <= 30:
+        raise ValueError("Timeout must be between 1 and 30 seconds.")
+
+    if len(code.encode("utf-8")) > MAX_CODE_BYTES:
+        raise ValueError("Candidate code is too large.")
+
+    if len(tests.encode("utf-8")) > MAX_TEST_BYTES:
+        raise ValueError("Test code is too large.")
+
+    syntax_error = _validate_syntax(code)
+    if syntax_error:
+        return syntax_error
+
+    test_syntax_error = _validate_syntax(tests)
+    if test_syntax_error:
+        return {
+            **test_syntax_error,
+            "status": "invalid_test_syntax",
+        }
+
+    result = _run_container(
+        {
+            "main.py": code,
+            "test_main.py": tests,
+        },
+        [
+            "python", "-I", "-m", "pytest",
+            "-q", "-p", "no:cacheprovider",
+            "/workspace/test_main.py",
+        ],
+        timeout_seconds,
+    )
+
+    output = result.get("stdout", "") + "\n" + result.get("stderr", "")
+    summary = re.search(
+        r"(?:(\d+) passed)?"
+        r"[, ]*(?:(\d+) failed)?"
+        r"[, ]*(?:(\d+) error(?:s)?)?"
+        r"[, ]*(?:(\d+) skipped)?",
+        output,
+    )
+
+    # Prefer pytest's final summary line over arbitrary output.
+    summary_lines = [
+        line.strip()
+        for line in output.splitlines()
+        if re.search(r"\b(passed|failed|error|skipped)\b", line)
+    ]
+    final_summary = summary_lines[-1] if summary_lines else ""
+
+    def count(label: str) -> int:
+        match = re.search(rf"(\d+)\s+{label}\b", final_summary)
+        return int(match.group(1)) if match else 0
+
+    passed = count("passed")
+    failed = count("failed") + count("error")
+
+    result.update({
+        "passed_tests": passed,
+        "failed_tests": failed,
+        "skipped_tests": count("skipped"),
+        "passed": result.get("exit_code") == 0 and failed == 0,
+    })
+
+    if result.get("status") == "completed" and result.get("exit_code") != 0:
+        result["status"] = "tests_failed"
+
+    return result
