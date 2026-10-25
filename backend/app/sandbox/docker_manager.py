@@ -53,17 +53,37 @@ def _validate_syntax(code: str) -> dict[str, Any] | None:
         }
 
 
+_docker_client: docker.DockerClient | None = None
+
+
+def _get_docker_client() -> docker.DockerClient:
+    global _docker_client
+    if _docker_client is None:
+        _docker_client = docker.from_env()
+    else:
+        try:
+            _docker_client.ping()
+        except Exception:
+            _docker_client = docker.from_env()
+    return _docker_client
+
+
 def _run_container(
     files: dict[str, str],
     command: list[str],
     timeout_seconds: int,
 ) -> dict[str, Any]:
     archive = _create_archive(files)
-    client = docker.from_env()
     container = None
-    started = time.monotonic()
 
     try:
+        try:
+            client = _get_docker_client()
+        except DockerException as exc:
+            raise RuntimeError(
+                f"Docker daemon is not accessible: {exc}"
+            ) from exc
+
         try:
             client.images.get(SANDBOX_IMAGE)
         except ImageNotFound as exc:
@@ -80,7 +100,7 @@ def _run_container(
             read_only=False,
             mem_limit="256m",
             cpu_period=100000,
-            cpu_quota=50000,
+            cpu_quota=100000,
             pids_limit=64,
             cap_drop=["ALL"],
             security_opt=["no-new-privileges:true"],
@@ -101,7 +121,8 @@ def _run_container(
             raise RuntimeError("Could not copy files into sandbox.")
 
         container.start()
-        deadline = started + timeout_seconds
+        exec_started = time.monotonic()
+        deadline = exec_started + timeout_seconds
 
         while time.monotonic() < deadline:
             container.reload()
@@ -116,7 +137,7 @@ def _run_container(
                 "passed_tests": 0,
                 "failed_tests": 0,
                 "duration_ms": round(
-                    (time.monotonic() - started) * 1000
+                    (time.monotonic() - exec_started) * 1000
                 ),
             }
 
@@ -135,7 +156,7 @@ def _run_container(
             "stdout": stdout[-MAX_OUTPUT_BYTES:],
             "stderr": stderr[-MAX_OUTPUT_BYTES:],
             "duration_ms": round(
-                (time.monotonic() - started) * 1000
+                (time.monotonic() - exec_started) * 1000
             ),
         }
 
@@ -148,7 +169,6 @@ def _run_container(
                 container.remove(force=True)
             except DockerException:
                 pass
-        client.close()
 
 
 def execute_python(

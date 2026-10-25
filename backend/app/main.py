@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes_sandbox import router as sandbox_router
 from app.api.routes_evaluation import router as evaluation_router
+from app.api.routes_tasks import router as tasks_router
 
 app = FastAPI(
     title="ParallelMe API",
@@ -20,6 +21,7 @@ app.add_middleware(
 
 app.include_router(sandbox_router)
 app.include_router(evaluation_router)
+app.include_router(tasks_router)
 
 
 @app.get("/")
