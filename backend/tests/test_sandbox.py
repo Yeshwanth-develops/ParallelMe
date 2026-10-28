@@ -1,5 +1,21 @@
+import docker
 import pytest
 from app.sandbox.docker_manager import execute_python
+
+
+def _is_docker_available() -> bool:
+    try:
+        client = docker.from_env()
+        client.ping()
+        return True
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _is_docker_available(),
+    reason="Docker daemon is not accessible on this host",
+)
 
 
 def test_sandbox_simple_execution():

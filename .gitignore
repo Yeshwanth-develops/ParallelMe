@@ -49,3 +49,8 @@ yarn-error.log*
 *~
 .DS_Store
 Thumbs.db
+
+.env
+.venv/
+__pycache__/
+.pytest_cache/
