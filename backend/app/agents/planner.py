@@ -161,19 +161,18 @@ Requirements:
                 plan = PlannerOutput.model_validate_json(raw_text)
                 return _validate_plan(plan)
 
-            except PlannerError:
-                raise
-            except ValidationError as exc:
-                raise PlannerError(
-                    "Gemini returned a plan that failed schema validation."
-                ) from exc
-            except Exception as exc:
+            except (PlannerError, ValidationError, Exception) as exc:
                 last_error = exc
                 continue
 
+        if isinstance(last_error, ValidationError):
+            raise PlannerError(
+                "Gemini returned a plan that failed schema validation."
+            ) from last_error
+        if isinstance(last_error, PlannerError):
+            raise last_error
         raise PlannerError(
-            "Gemini strategy generation failed. Check server logs and "
-            "verify the model name, API key, quota, and network access."
+            f"Gemini strategy generation failed ({type(last_error).__name__}): {last_error}"
         ) from last_error
     finally:
         await client.aio.aclose()

@@ -2,17 +2,10 @@
 from __future__ import annotations
 
 import json
-import math
-import statistics
-import time
 from typing import Any
-
-import docker
-from docker.errors import DockerException
 
 from app.sandbox.docker_manager import (
     MAX_CODE_BYTES,
-    SANDBOX_IMAGE,
     _run_container,
 )
 
@@ -20,6 +13,7 @@ from app.sandbox.docker_manager import (
 def _benchmark_script() -> str:
     return r'''
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -39,28 +33,71 @@ spec.loader.exec_module(module)
 function = getattr(module, config["function_name"])
 warmups = config["warmups"]
 repetitions = config["repetitions"]
+rounds = config["rounds"]
 case_results = []
 
 for case_index, case in enumerate(config["cases"]):
-    args = case.get("args", [])
-    kwargs = case.get("kwargs", {})
-    samples = []
+    args_template = case.get("args", [])
+    kwargs_template = case.get("kwargs", {})
+    expected = case["expected"]
+    all_samples = []
+    round_medians = []
+    round_results = []
 
-    # Suppress candidate prints so benchmark output stays machine-readable.
-    for _ in range(warmups):
-        with contextlib.redirect_stdout(io.StringIO()):
-            with contextlib.redirect_stderr(io.StringIO()):
-                function(*args, **kwargs)
+    for round_index in range(rounds):
+        # Warm up independently for each round.
+        for _ in range(warmups):
+            args = copy.deepcopy(args_template)
+            kwargs = copy.deepcopy(kwargs_template)
 
-    for _ in range(repetitions):
-        started = time.perf_counter_ns()
-        with contextlib.redirect_stdout(io.StringIO()):
-            with contextlib.redirect_stderr(io.StringIO()):
-                function(*args, **kwargs)
-        elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
-        samples.append(elapsed_ms)
+            with contextlib.redirect_stdout(io.StringIO()):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    actual = function(*args, **kwargs)
 
-    ordered = sorted(samples)
+            if actual != expected:
+                raise AssertionError(
+                    f"Incorrect output in case {case_index}, "
+                    f"round {round_index}"
+                )
+
+        round_samples = []
+        for _ in range(repetitions):
+            args = copy.deepcopy(args_template)
+            kwargs = copy.deepcopy(kwargs_template)
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    started = time.perf_counter_ns()
+                    actual = function(*args, **kwargs)
+                    elapsed_ms = (
+                        time.perf_counter_ns() - started
+                    ) / 1_000_000
+
+            # Output comparison is deliberately outside the timed interval.
+            if actual != expected:
+                raise AssertionError(
+                    f"Incorrect output for case {case_index}: "
+                    f"expected {expected!r}, got {actual!r}"
+                )
+
+            round_samples.append(elapsed_ms)
+            all_samples.append(elapsed_ms)
+
+        round_ordered = sorted(round_samples)
+        round_p95_index = min(
+            len(round_ordered) - 1,
+            max(0, math.ceil(0.95 * len(round_ordered)) - 1),
+        )
+        round_median = statistics.median(round_samples)
+        round_medians.append(round_median)
+        round_results.append({
+            "round_index": round_index,
+            "median_ms": round_median,
+            "p95_ms": round_ordered[round_p95_index],
+            "repetitions": repetitions,
+        })
+
+    ordered = sorted(all_samples)
     p95_index = min(
         len(ordered) - 1,
         max(0, math.ceil(0.95 * len(ordered)) - 1),
@@ -68,9 +105,12 @@ for case_index, case in enumerate(config["cases"]):
 
     case_results.append({
         "case_index": case_index,
-        "median_ms": statistics.median(samples),
+        "median_ms": statistics.median(round_medians),
         "p95_ms": ordered[p95_index],
         "repetitions": repetitions,
+        "rounds": rounds,
+        "round_results": round_results,
+        "correct": True,
     })
 
 print(
@@ -79,6 +119,8 @@ print(
         "benchmark_median_ms": statistics.median(
             item["median_ms"] for item in case_results
         ),
+        "rounds": rounds,
+        "correct": True,
     }),
     flush=True,
 )
@@ -91,8 +133,10 @@ def benchmark_python(
     cases: list[dict[str, Any]],
     repetitions: int = 20,
     warmups: int = 3,
+    rounds: int = 5,
     timeout_seconds: int = 10,
 ) -> dict[str, Any]:
+
     if len(code.encode("utf-8")) > MAX_CODE_BYTES:
         raise ValueError("Candidate code is too large.")
 
@@ -108,14 +152,46 @@ def benchmark_python(
     if not 0 <= warmups <= 20:
         raise ValueError("Warm-ups must be between 0 and 20.")
 
+    if not 1 <= rounds <= 10:
+        raise ValueError("Benchmark rounds must be between 1 and 10.")
+
+    if timeout_seconds < 1:
+        raise ValueError("Timeout must be at least 1 second.")
+
+    for index, case in enumerate(cases):
+        if not isinstance(case, dict):
+            raise ValueError(f"Benchmark case {index} must be an object.")
+
+        if "expected" not in case:
+            raise ValueError(
+                f"Benchmark case {index} must include an expected value."
+            )
+
+        if not isinstance(case.get("args", []), list):
+            raise ValueError(
+                f"Benchmark case {index}: args must be a list."
+            )
+
+        if not isinstance(case.get("kwargs", {}), dict):
+            raise ValueError(
+                f"Benchmark case {index}: kwargs must be an object."
+            )
+
     config = {
         "function_name": function_name,
         "cases": cases,
         "repetitions": repetitions,
         "warmups": warmups,
+        "rounds": rounds,
     }
 
-    config_json = json.dumps(config)
+    try:
+        config_json = json.dumps(config)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Benchmark cases must contain JSON-serializable values."
+        ) from exc
+
     if len(config_json.encode("utf-8")) > 64 * 1024:
         raise ValueError("Benchmark input data is too large.")
 
@@ -133,6 +209,7 @@ def benchmark_python(
         return {
             "status": result.get("status", "benchmark_failed"),
             "passed": False,
+            "correct": False,
             "error": result.get("stderr") or result.get("stdout"),
             "duration_ms": result.get("duration_ms"),
         }
@@ -151,15 +228,26 @@ def benchmark_python(
         return {
             "status": "benchmark_failed",
             "passed": False,
+            "correct": False,
             "error": "Benchmark runner did not return metrics.",
         }
 
-    metrics = json.loads(payload)
+    try:
+        metrics = json.loads(payload)
+    except json.JSONDecodeError:
+        return {
+            "status": "benchmark_failed",
+            "passed": False,
+            "correct": False,
+            "error": "Benchmark runner returned invalid metrics.",
+        }
 
     return {
         "status": "completed",
         "passed": True,
+        "correct": metrics["correct"],
         "benchmark_median_ms": metrics["benchmark_median_ms"],
         "cases": metrics["cases"],
+        "rounds": metrics.get("rounds", rounds),
         "duration_ms": result["duration_ms"],
     }

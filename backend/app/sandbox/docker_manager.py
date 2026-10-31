@@ -252,6 +252,16 @@ def evaluate_python(
         {
             "main.py": code,
             "test_main.py": tests,
+            "conftest.py": (
+                "import builtins\n"
+                "try:\n"
+                "    import main\n"
+                "    for _k, _v in main.__dict__.items():\n"
+                "        if not _k.startswith('__'):\n"
+                "            setattr(builtins, _k, _v)\n"
+                "except Exception:\n"
+                "    pass\n"
+            ),
             "run_tests.py": _build_pytest_runner(),
         },
         ["python", "-I", "/workspace/run_tests.py"],

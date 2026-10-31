@@ -40,6 +40,7 @@ def test_candidate_ranking():
                 "passed_tests": 5,
                 "failed_tests": 0,
                 "duration_ms": 120,
+                "benchmark_median_ms": 120.0,
             },
         },
         {
@@ -51,6 +52,7 @@ def test_candidate_ranking():
                 "passed_tests": 5,
                 "failed_tests": 0,
                 "duration_ms": 80,
+                "benchmark_median_ms": 80.0,
             },
         },
         {
