@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import io
+import json
 import re
 import tarfile
 import time
@@ -15,6 +16,32 @@ SANDBOX_IMAGE = "parallelme-sandbox:latest"
 MAX_CODE_BYTES = 64 * 1024
 MAX_TEST_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 16 * 1024
+
+
+def _build_pytest_runner() -> str:
+    """Measure pytest wall time inside the sandbox."""
+    return r'''
+import json
+import time
+import pytest
+
+started = time.perf_counter()
+exit_code = int(pytest.main([
+    "-q",
+    "-p", "no:cacheprovider",
+    "/workspace/test_main.py",
+]))
+execution_ms = (time.perf_counter() - started) * 1000
+
+print(
+    "PARALLELME_METRICS=" + json.dumps({
+        "execution_duration_ms": round(execution_ms, 3),
+        "pytest_exit_code": exit_code,
+    }),
+    flush=True,
+)
+raise SystemExit(exit_code)
+'''
 
 
 def _create_archive(files: dict[str, str]) -> bytes:
@@ -225,35 +252,44 @@ def evaluate_python(
         {
             "main.py": code,
             "test_main.py": tests,
+            "run_tests.py": _build_pytest_runner(),
         },
-        [
-            "python", "-I", "-m", "pytest",
-            "-q", "-p", "no:cacheprovider",
-            "/workspace/test_main.py",
-        ],
+        ["python", "-I", "/workspace/run_tests.py"],
         timeout_seconds,
     )
 
     output = result.get("stdout", "") + "\n" + result.get("stderr", "")
-    summary = re.search(
-        r"(?:(\d+) passed)?"
-        r"[, ]*(?:(\d+) failed)?"
-        r"[, ]*(?:(\d+) error(?:s)?)?"
-        r"[, ]*(?:(\d+) skipped)?",
-        output,
-    )
 
-    # Prefer pytest's final summary line over arbitrary output.
+    # Extract the runner's in-container measurement.
+    metrics = None
+    for line in output.splitlines():
+        if line.startswith("PARALLELME_METRICS="):
+            try:
+                metrics = json.loads(
+                    line.removeprefix("PARALLELME_METRICS=")
+                )
+            except json.JSONDecodeError:
+                metrics = None
+
+    if metrics:
+        result["execution_duration_ms"] = metrics["execution_duration_ms"]
+    else:
+        result["execution_duration_ms"] = None
+
+    # Parse pytest's final summary line, not arbitrary candidate output.
     summary_lines = [
         line.strip()
         for line in output.splitlines()
         if re.search(r"\b(passed|failed|error|skipped)\b", line)
+        and not line.startswith("PARALLELME_METRICS=")
     ]
     final_summary = summary_lines[-1] if summary_lines else ""
+
 
     def count(label: str) -> int:
         match = re.search(rf"(\d+)\s+{label}\b", final_summary)
         return int(match.group(1)) if match else 0
+
 
     passed = count("passed")
     failed = count("failed") + count("error")
@@ -269,3 +305,4 @@ def evaluate_python(
         result["status"] = "tests_failed"
 
     return result
+
