@@ -109,7 +109,7 @@ export default function Home() {
       const health = await checkBackendHealth();
       setBackendOnline(health.online);
       if (health.online) {
-        addLog("[BACKEND] Connected to FastAPI at http://localhost:8000 (Healthy)");
+        addLog("[BACKEND] Connected to FastAPI at http://127.0.0.1:8000 (Healthy)");
       } else {
         addLog(
           "[BACKEND] API server currently offline. Interactive mode enabled with simulated strategy generation."
@@ -269,6 +269,8 @@ export default function Home() {
           benchmark_cases: parsedCases,
           benchmark_repetitions: benchmarkRepetitions,
           benchmark_warmups: 3,
+          benchmark_rounds: activePreset.benchmarkRounds || 5,
+          benchmark_dataset: activePreset.benchmarkDataset,
         });
       } else {
         // Fallback simulation for offline testing

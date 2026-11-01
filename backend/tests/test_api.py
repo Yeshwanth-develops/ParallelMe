@@ -60,3 +60,34 @@ def test_tasks_plan_and_evaluate_validation():
         },
     )
     assert response.status_code == 422
+
+
+def test_tasks_plan_and_evaluate_dataset_conflicts():
+    # Both dataset and cases supplied
+    response = client.post(
+        "/api/tasks/plan-and-evaluate",
+        json={
+            "task_description": "Valid task description for testing.",
+            "tests": "def test(): assert True",
+            "benchmark_dataset": "two_sum",
+            "benchmark_cases": [{"args": [1], "expected": 1}],
+            "function_name": "two_sum",
+        },
+    )
+    assert response.status_code == 422
+    assert "Provide either benchmark_dataset or benchmark_cases" in response.json()["detail"]
+
+
+def test_tasks_plan_and_evaluate_two_sum_function_name_required():
+    response = client.post(
+        "/api/tasks/plan-and-evaluate",
+        json={
+            "task_description": "Valid task description for testing.",
+            "tests": "def test(): assert True",
+            "benchmark_dataset": "two_sum",
+            "function_name": "other_func",
+        },
+    )
+    assert response.status_code == 422
+    assert "The two_sum dataset requires function_name='two_sum'" in response.json()["detail"]
+

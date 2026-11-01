@@ -34,22 +34,33 @@ def test_two_sum_duplicates():
 def test_two_sum_negative():
     assert two_sum([-1, -2, -3, -4, -5], -8) == [2, 4]
 `,
+    benchmarkDataset: "two_sum",
     benchmarkCases: [
       {
-        args: [[2, 7, 11, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60], 115],
+        name: "small",
+        input_size: 100,
+        args: [Array.from({ length: 100 }, (_, i) => i), 197],
+        expected: [98, 99],
         kwargs: {},
       },
       {
-        args: [Array.from({ length: 500 }, (_, i) => i * 2), 998],
+        name: "medium",
+        input_size: 500,
+        args: [Array.from({ length: 500 }, (_, i) => i), 997],
+        expected: [498, 499],
         kwargs: {},
       },
       {
+        name: "large",
+        input_size: 1000,
         args: [Array.from({ length: 1000 }, (_, i) => i), 1997],
+        expected: [998, 999],
         kwargs: {},
       },
     ],
     benchmarkRepetitions: 20,
     benchmarkWarmups: 3,
+    benchmarkRounds: 5,
   },
   {
     id: "valid-parentheses",
@@ -91,16 +102,30 @@ def test_invalid_single():
 `,
     benchmarkCases: [
       {
+        name: "nested-small",
+        input_size: 24,
         args: ["{[()()]}{[()()]}{[()()]}"],
+        expected: true,
         kwargs: {},
       },
       {
+        name: "balanced-medium",
+        input_size: 400,
         args: ["(".repeat(200) + ")".repeat(200)],
+        expected: true,
+        kwargs: {},
+      },
+      {
+        name: "deeply-nested-large",
+        input_size: 996,
+        args: ["{[(".repeat(166) + ")]}".repeat(166)],
+        expected: true,
         kwargs: {},
       },
     ],
-    benchmarkRepetitions: 25,
+    benchmarkRepetitions: 20,
     benchmarkWarmups: 3,
+    benchmarkRounds: 5,
   },
   {
     id: "merge-intervals",
@@ -140,18 +165,25 @@ def test_merge_contained():
 `,
     benchmarkCases: [
       {
+        name: "small",
+        input_size: 6,
         args: [[[1, 4], [0, 4], [3, 5], [10, 15], [12, 18], [20, 25]]],
+        expected: [[0, 5], [10, 18], [20, 25]],
         kwargs: {},
       },
       {
+        name: "overlapping-chain",
+        input_size: 150,
         args: [
           Array.from({ length: 150 }, (_, i) => [i * 2, i * 2 + 3]),
         ],
+        expected: [[0, 301]],
         kwargs: {},
       },
     ],
     benchmarkRepetitions: 15,
     benchmarkWarmups: 2,
+    benchmarkRounds: 5,
   },
   {
     id: "longest-substring",
@@ -189,16 +221,23 @@ def test_empty():
 `,
     benchmarkCases: [
       {
+        name: "small-alphabet",
+        input_size: 52,
         args: ["abcdefghijklmnopqrstuvwxyz" + "abcdefghijklmnopqrstuvwxyz"],
+        expected: 26,
         kwargs: {},
       },
       {
+        name: "repeated-prefix",
+        input_size: 526,
         args: ["a".repeat(500) + "bcdefghijklmnopqrstuvwxyz"],
+        expected: 27,
         kwargs: {},
       },
     ],
     benchmarkRepetitions: 20,
     benchmarkWarmups: 3,
+    benchmarkRounds: 5,
   },
 ];
 

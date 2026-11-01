@@ -7,7 +7,7 @@ import {
 } from "./types";
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 export async function checkBackendHealth(): Promise<{
   online: boolean;
@@ -37,6 +37,8 @@ export async function runPlanAndEvaluate(payload: {
   benchmark_cases?: BenchmarkCase[];
   benchmark_repetitions?: number;
   benchmark_warmups?: number;
+  benchmark_rounds?: number;
+  benchmark_dataset?: "two_sum";
 }): Promise<PlanAndEvaluateResponse> {
   const res = await fetch(`${API_BASE_URL}/api/tasks/plan-and-evaluate`, {
     method: "POST",
@@ -76,6 +78,7 @@ export async function runCandidatesEvaluation(payload: {
   benchmark_cases?: BenchmarkCase[];
   benchmark_repetitions?: number;
   benchmark_warmups?: number;
+  benchmark_rounds?: number;
 }): Promise<EvaluationPayload> {
   const res = await fetch(`${API_BASE_URL}/api/tasks/evaluate`, {
     method: "POST",

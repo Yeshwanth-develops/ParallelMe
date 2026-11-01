@@ -13,7 +13,10 @@ export interface FileTab {
 
 export interface BenchmarkCase {
   args: unknown[];
-  kwargs: Record<string, unknown>;
+  kwargs?: Record<string, unknown>;
+  expected?: unknown;
+  name?: string;
+  input_size?: number;
 }
 
 export interface CandidateResult {
@@ -29,11 +32,17 @@ export interface CandidateResult {
   benchmark?: {
     status: string;
     benchmark_median_ms?: number;
+    ranking_metric?: string;
     cases?: Array<{
       case_index: number;
+      name?: string;
+      input_size?: number;
       median_ms: number;
       p95_ms: number;
-      repetitions: number;
+      repetitions?: number;
+      rounds?: Array<{ round_index: number; median_ms: number }>;
+      total_samples?: number;
+      correct?: boolean;
     }>;
     error?: string;
   };
@@ -110,4 +119,6 @@ export interface CodingPreset {
   benchmarkCases: BenchmarkCase[];
   benchmarkRepetitions: number;
   benchmarkWarmups: number;
+  benchmarkRounds?: number;
+  benchmarkDataset?: "two_sum";
 }

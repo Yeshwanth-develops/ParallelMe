@@ -97,27 +97,50 @@ for case_index, case in enumerate(config["cases"]):
             "repetitions": repetitions,
         })
 
-    ordered = sorted(all_samples)
-    p95_index = min(
-        len(ordered) - 1,
-        max(0, math.ceil(0.95 * len(ordered)) - 1),
+    ordered_all = sorted(all_samples)
+    overall_p95_index = min(
+        len(ordered_all) - 1,
+        max(0, math.ceil(0.95 * len(ordered_all)) - 1),
     )
 
     case_results.append({
         "case_index": case_index,
+        "name": case.get("name", f"case-{case_index}"),
+        "input_size": case.get("input_size"),
         "median_ms": statistics.median(round_medians),
-        "p95_ms": ordered[p95_index],
-        "repetitions": repetitions,
-        "rounds": rounds,
-        "round_results": round_results,
+        "p95_ms": ordered_all[overall_p95_index],
+        "rounds": round_results,
+        "total_samples": len(all_samples),
         "correct": True,
     })
 
+largest_case = max(
+    case_results,
+    key=lambda item: (
+        item["input_size"]
+        if item["input_size"] is not None
+        else -1
+    ),
+)
+has_input_sizes = all(
+    item["input_size"] is not None
+    for item in case_results
+)
+benchmark_score = (
+    largest_case["median_ms"]
+    if has_input_sizes
+    else statistics.median(
+        item["median_ms"] for item in case_results
+    )
+)
 print(
     "PARALLELME_BENCHMARK=" + json.dumps({
         "cases": case_results,
-        "benchmark_median_ms": statistics.median(
-            item["median_ms"] for item in case_results
+        "benchmark_median_ms": benchmark_score,
+        "ranking_metric": (
+            "largest_input_median"
+            if has_input_sizes
+            else "median_of_case_medians"
         ),
         "rounds": rounds,
         "correct": True,
@@ -247,6 +270,7 @@ def benchmark_python(
         "passed": True,
         "correct": metrics["correct"],
         "benchmark_median_ms": metrics["benchmark_median_ms"],
+        "ranking_metric": metrics["ranking_metric"],
         "cases": metrics["cases"],
         "rounds": metrics.get("rounds", rounds),
         "duration_ms": result["duration_ms"],

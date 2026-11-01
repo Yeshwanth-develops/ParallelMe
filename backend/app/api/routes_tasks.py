@@ -1,6 +1,6 @@
 import asyncio
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -10,6 +10,8 @@ from app.orchestrator.engine import run_parallel_evaluation
 
 from app.sandbox.benchmark_runner import benchmark_python
 from app.orchestrator.ranker import rank_candidates
+
+from app.sandbox.benchmark_datasets import generate_two_sum_cases
 
 router = APIRouter(prefix="/api/tasks", tags=["orchestration"])
 
@@ -116,6 +118,7 @@ class PlanAndEvaluateRequest(BaseModel):
     benchmark_repetitions: int = Field(default=20, ge=5, le=200)
     benchmark_warmups: int = Field(default=3, ge=0, le=20)
     benchmark_rounds: int = Field(default=5, ge=1, le=10)
+    benchmark_dataset: Literal["two_sum"] | None = None
 
 
 @router.post("/plan-and-evaluate")
@@ -123,10 +126,44 @@ async def plan_and_evaluate(
     request: PlanAndEvaluateRequest,
 ) -> dict[str, Any]:
     try:
-        # 1. Generate strategies with Gemini.
+        # 1. Resolve and validate benchmark cases.
+        selected_cases = request.benchmark_cases
+
+        if request.benchmark_dataset is not None:
+            if request.benchmark_cases is not None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Provide either benchmark_dataset "
+                        "or benchmark_cases, not both."
+                    ),
+                )
+
+            if request.benchmark_dataset == "two_sum":
+                if request.function_name != "two_sum":
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "The two_sum dataset requires "
+                            "function_name='two_sum'."
+                        ),
+                    )
+
+                selected_cases = generate_two_sum_cases()
+
+        if selected_cases is not None and not request.function_name:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "function_name is required when "
+                    "benchmarking is enabled."
+                ),
+            )
+
+        # 2. Generate strategies with Gemini.
         plan = await generate_strategies(request.task_description)
 
-        # 2. Convert the plan into the existing engine's input format.
+        # 3. Convert the plan into the existing engine's input format.
         candidates = [
             {
                 "candidate_id": f"strategy-{index}",
@@ -140,7 +177,7 @@ async def plan_and_evaluate(
             for candidate in candidates
         }
 
-        # 3. Run the existing pruning, sandbox evaluation, and ranking.
+        # 4. Run the existing pruning, sandbox evaluation, and ranking.
         results = await run_parallel_evaluation(
             candidates=candidates,
             tests=request.tests,
@@ -148,35 +185,35 @@ async def plan_and_evaluate(
             max_concurrency=request.max_concurrency,
         )
 
-        if request.benchmark_cases is not None:
-            if not request.function_name:
-                raise HTTPException(
-                    status_code=422,
-                    detail="function_name is required when benchmark_cases are supplied.",
-                )
-
+        # 5. Benchmark passing candidates.
+        if selected_cases is not None:
             for candidate in results["ranked_candidates"]:
-                candidate["code"] = candidate_code[candidate["candidate_id"]]
+                candidate["code"] = candidate_code[
+                    candidate["candidate_id"]
+                ]
 
             await benchmark_passing_candidates(
                 results["ranked_candidates"],
                 request.function_name,
-                request.benchmark_cases,
+                selected_cases,
                 request.benchmark_repetitions,
                 request.benchmark_warmups,
                 request.benchmark_rounds,
             )
 
-            # Re-rank using correctness and actual benchmark medians.
             results["ranked_candidates"] = rank_candidates(
                 results["ranked_candidates"]
             )
 
-            # Do not expose candidate source code in the response.
             for candidate in results["ranked_candidates"]:
                 candidate.pop("code", None)
 
-        # 4. Return the planner's explanations alongside measured results.
+            results["benchmark_dataset"] = (
+                request.benchmark_dataset or "custom"
+            )
+            results["benchmark_case_count"] = len(selected_cases)
+
+        # 6. Return the planner's explanations alongside measured results.
         explanations = {
             f"strategy-{index}": {
                 "approach": item.approach,
